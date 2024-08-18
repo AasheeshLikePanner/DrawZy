@@ -5,3 +5,8 @@ type Draw = {
 }
   
 type Point = { x: number; y: number }
+
+type senderDraw = Draw & {
+    color:string
+    lineWidth:number
+}

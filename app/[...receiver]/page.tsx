@@ -15,6 +15,7 @@ export default function receiver(){
     const [stream, setStream] = useState<MediaStream | null>(null)
     const [camera, setCamera] = useState(true)
     const [mic, setMic] = useState(true);
+    const senderCanvasRef = useRef<HTMLCanvasElement>(null)
     const searchParams = useSearchParams();
     const videoRef:any = useRef<HTMLVideoElement | null>(null);
     const webCam:any = useRef<HTMLVideoElement | null>(null);
@@ -22,13 +23,16 @@ export default function receiver(){
     const { canvasRef, onMouseDown, clear } = useDraw(drawLine)
     const [mode, setMode] = useState<'draw' | 'erase'>('draw');
     const [lineWidth ,setLineWidth] = useState(5)
+    const [socket , setSocket] = useState<WebSocket | null>(null)
 
-    function drawLine({ prevPoint, currentPoint, ctx }: Draw) {
+
+    function drawReceivedLine({ prevPoint, currentPoint, ctx, color, lineWidth }: senderDraw) {
         const { x: currX, y: currY } = currentPoint
         const lineColor = color
     
         let startPoint = prevPoint ?? currentPoint
         ctx.beginPath()
+        
         ctx.lineWidth = lineWidth
     
         if (mode === 'draw') {
@@ -51,23 +55,71 @@ export default function receiver(){
         }
     }
 
+    function clearSenderCanvas(ctx:any){
+        if (senderCanvasRef) {
+            const canvas = senderCanvasRef.current;
+            if (canvas) {
+                ctx.clearRect(0, 0, canvas.width, canvas.height)    
+            }
+        }
+    }
+
+    function drawLine({ prevPoint, currentPoint, ctx }: Draw) {
+        const { x: currX, y: currY } = currentPoint
+        const lineColor = color
+    
+        let startPoint = prevPoint ?? currentPoint
+        ctx.beginPath()
+        
+        ctx.lineWidth = lineWidth
+        ctx.globalCompositeOperation = 'source-over'
+        ctx.strokeStyle = lineColor
+        ctx.moveTo(startPoint.x, startPoint.y)
+        ctx.lineTo(currX, currY)
+        ctx.stroke()
+        ctx.fillStyle = lineColor
+        ctx.beginPath()
+        ctx.arc(startPoint.x, startPoint.y, 2, 0, 2 * Math.PI)
+        ctx.fill()
+
+        if (socket) {
+            socket.send(JSON.stringify({
+                type:'draw',
+                prevPoint,
+                currentPoint,
+                color,
+                lineWidth
+            }))
+        }
+    }
+
 
     useEffect(()=>{
         const roomId:string | null = searchParams.get('roomId')
         const socket = new WebSocket('ws://localhost:8080');
+        let ctx:CanvasRenderingContext2D | null = null;
         socket.onopen = () => {
             socket.send(JSON.stringify({type: 'receiver', roomId}));
         }
-        startTheConnection(socket, roomId);
+        setSocket(socket)
         if (canvasRef.current) {
             const canvas = canvasRef.current;
             const rect = canvas.getBoundingClientRect();
             canvas.width = rect.width;
             canvas.height = rect.height;
           }
+          if (senderCanvasRef.current) {
+            const canvas = senderCanvasRef.current;
+            const rect = canvas.getBoundingClientRect();
+            canvas.width = rect.width;
+            canvas.height = rect.height;
+            ctx = senderCanvasRef.current?.getContext('2d')
+        
+        }
+        startConnection(socket ,roomId, ctx!)
     }, [])
 
-    function startTheConnection(socket:WebSocket, roomId:string|null){
+    function startConnection(socket:WebSocket, roomId:string|null, ctx:CanvasRenderingContext2D){
         
 
         const pc = new RTCPeerConnection();
@@ -97,8 +149,13 @@ export default function receiver(){
                     
                 })
             }else if(message.type === 'iceCandidate'){
-                console.log('Receiver adding ICE candidate:', message.candidate);
                 pc.addIceCandidate(message.candidate);
+            }else if(message.type === 'draw'){
+                if (ctx) {
+                    drawReceivedLine({prevPoint:message.prevPoint, currentPoint: message.currentPoint, ctx,color:message.color, lineWidth:message.lineWidth})                    
+                }
+            }else if(message.type === 'clear'){
+                clearSenderCanvas(ctx)
             }
         }
         startSendingWebCamVideo(pc)
@@ -134,7 +191,8 @@ export default function receiver(){
     }
 
     const handleClear = () => {
-
+        clear()
+        socket?.send(JSON.stringify({type:'clear'}));
     }
 
     const takeScreenShot = () => {
@@ -143,15 +201,19 @@ export default function receiver(){
 
     return(
         <div className="w-screen h-screen flex flex-row">
-            <div className="h-screen w-4/5 p-5">
-                {/* <div className="dotted-grid w-full h-full rounded-xl shadow-lg bg-white outline-zinc-400 outline-3 outline"> */}
+            <div className="h-screen w-4/5 p-5 relative"> {/* Set relative positioning for the container */}
+                <div className="dotted-grid w-full h-full rounded-xl shadow-lg bg-white outline-zinc-400 outline-3 outline relative"> {/* Set relative positioning here too */}
                     <canvas 
-                         ref={canvasRef}
-                         onMouseDown={onMouseDown}
-                         className="w-full h-full dotted-grid rounded-xl shadow-lg bg-white outline-zinc-400 outline-3 outline "
+                        ref={senderCanvasRef}
+                        className="w-full h-full absolute top-0 left-0"
                     ></canvas>  
-                {/* </div> */}
+                    <canvas 
+                        ref={canvasRef}
+                        onMouseDown={onMouseDown}
+                        className="w-full h-full absolute top-0 left-0"
+                    ></canvas>  
             </div>
+                </div>
            <div className="w-1/5 shadow-md bg-gray-100 h-screen flex-col flex" >
                 <div className="h-1/2 flex-col flex w-full p-5">
                     <div className="w-full bg-gray-200 rounded-md shadow-sm p-1 hover:bg-blue-300 hover:shadow-lg  hover:animate-pulse">
@@ -163,8 +225,8 @@ export default function receiver(){
                         <video className="object-fill rounded-sm shadow-md" ref={webCam} ></video>
                     </div>
                 </div>
-                <div className="h-1/2  items-end p-5 justify-center flex-row mt-20 ">
-                    <div className="bg-zinc-200 p-5 rounded-xl shadow-lg items-center justify-center flex flex-col">
+                <div className="h-1/2 mt-20 items-end p-5 justify-center flex-row ">
+                    <div className="bg-zinc-200 mt-10 p-5 rounded-xl shadow-lg items-center justify-center flex flex-col">
                         <h1>Colors:</h1>
                         <div className="flex mt-2">
                             <div onClick={ () => setColor("#5fa5fa")} className="mr-5 w-8 h-8 rounded-full bg-blue-400"></div>
@@ -180,11 +242,11 @@ export default function receiver(){
 
                         <div className="mt-5 flex flex-row ">
                             
-                            <button onClick={clear} className="mr-5 bg-red-500 w-20 h-10 hover:bg-red-400 rounded-lg">clear</button>
+                            <button onClick={handleClear} className="mr-5 bg-red-500 w-20 h-10 hover:bg-red-400 rounded-lg">clear</button>
                             <button onClick={takeScreenShot} className=" bg-red-500 w-20 h-10 hover:bg-red-400 rounded-lg items-center justify-center flex"><Camera/></button>
                         </div>
                     </div>
-                <div className="bg-zinc-200  shadow-sm rounded-2xl p-2 flex mt-10 items-center justify-center">
+                <div className="bg-zinc-200  shadow-sm rounded-2xl p-2 flex mt-3 items-center justify-center">
                     <button 
                         onClick={handleVideo} 
                         className={`m-3 outline outline-2 ${camera ? 'outline-red-500' : 'outline-zinc-800'} rounded-full p-2`}
